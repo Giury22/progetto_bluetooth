@@ -1,4 +1,3 @@
-<?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.example.progetto_bluetooth">
 
@@ -15,7 +14,7 @@
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
 
-    <!-- Dichiarazione delle funzionalità Bluetooth (opzionale, ma utile per indicare che l'app richiede il Bluetooth) -->
+    <!-- Dichiarazione delle funzionalità Bluetooth -->
     <uses-feature android:name="android.hardware.bluetooth" android:required="true" />
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
 
@@ -47,7 +46,6 @@
             android:value="2" />
     </application>
 
-    <!-- Query necessaria per processare attività legate al testo (usata dal plugin Flutter) -->
     <queries>
         <intent>
             <action android:name="android.intent.action.PROCESS_TEXT" />
