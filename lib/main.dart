@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'dart:typed_data';
 import 'package:flutter_bluetooth_serial/flutter_bluetooth_serial.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 void main() => runApp(MyApp());
 
@@ -23,7 +24,7 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> {
   // Stato del Bluetooth
   BluetoothState _bluetoothState = BluetoothState.UNKNOWN;
-  
+
   // Lista dei dispositivi scoperti
   List<BluetoothDiscoveryResult> _devicesList = [];
   bool _isDiscovering = false;
@@ -35,6 +36,9 @@ class _HomePageState extends State<HomePage> {
   @override
   void initState() {
     super.initState();
+
+    // Richiedi i permessi necessari per il Bluetooth su Android 12+
+    _requestPermissions();
 
     // Recupera lo stato corrente del Bluetooth
     FlutterBluetoothSerial.instance.state.then((state) {
@@ -48,6 +52,22 @@ class _HomePageState extends State<HomePage> {
       setState(() {
         _bluetoothState = state;
       });
+    });
+  }
+
+  Future<void> _requestPermissions() async {
+    // Richiede i permessi necessari (Bluetooth Scan, Connect e localizzazione)
+    Map<Permission, PermissionStatus> statuses = await [
+      Permission.bluetoothScan,
+      Permission.bluetoothConnect,
+      Permission.locationWhenInUse,
+    ].request();
+
+    // Facoltativo: stampa un messaggio se qualche permesso non viene concesso
+    statuses.forEach((permission, status) {
+      if (!status.isGranted) {
+        print('Permesso non concesso: $permission');
+      }
     });
   }
 
@@ -113,23 +133,27 @@ class _HomePageState extends State<HomePage> {
               ],
             ),
           ),
-          // LISTA DEI DISPOSITIVI DISPONIBILI
+          // LISTA DEI DISPOSITIVI DISPONIBILI con il pezzo aggiornato
           Expanded(
             child: ListView.builder(
               itemCount: _devicesList.length,
               itemBuilder: (context, index) {
                 BluetoothDiscoveryResult result = _devicesList[index];
+                // Se il nome esiste e non è vuoto, lo mostra; altrimenti mostra "Dispositivo sconosciuto" o l'indirizzo MAC.
+                String displayName = (result.device.name != null && result.device.name!.isNotEmpty)
+                    ? result.device.name!
+                    : "Dispositivo sconosciuto (${result.device.address})";
+                
                 return ListTile(
                   leading: Icon(Icons.devices),
-                  title: Text(result.device.name ?? "Dispositivo sconosciuto"),
+                  title: Text(displayName),
                   subtitle: Text(result.device.address),
                   onTap: () => _connectToDevice(result.device),
                 );
               },
             ),
           ),
-          // (Opzionale) Qui potresti inserire l'interfaccia per l'invio/ricezione dei messaggi
-          // se la connessione è attiva.
+          // Se la connessione è attiva, mostra l'interfaccia per la chat.
           if (_isConnected) _buildChatArea(),
         ],
       ),
@@ -163,10 +187,9 @@ class _HomePageState extends State<HomePage> {
         _isConnected = true;
       });
       print('Connesso a ${device.address}');
-      
+
       // Ascolta i dati in ingresso (messaggi ricevuti)
       connection.input?.listen((data) {
-        // Qui gestisci i dati ricevuti
         String received = String.fromCharCodes(data);
         print('Messaggio ricevuto: $received');
       }).onDone(() {
@@ -218,7 +241,6 @@ class _HomePageState extends State<HomePage> {
 
   @override
   void dispose() {
-    // Chiudi la connessione quando il widget viene eliminato
     _connection?.dispose();
     super.dispose();
   }
