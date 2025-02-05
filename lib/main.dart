@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
+import 'dart:async';
 import 'dart:typed_data';
 import 'package:flutter_bluetooth_serial/flutter_bluetooth_serial.dart';
 import 'package:permission_handler/permission_handler.dart';
 
-void main() => runApp(MyApp());
+void main() {
+  runApp(MyApp());
+}
 
 class MyApp extends StatelessWidget {
   @override
@@ -28,6 +31,9 @@ class _HomePageState extends State<HomePage> {
   // Lista dei dispositivi scoperti
   List<BluetoothDiscoveryResult> _devicesList = [];
   bool _isDiscovering = false;
+
+  // Dispositivo selezionato
+  BluetoothDevice? _selectedDevice;
 
   // Connessione Bluetooth e stato di connessione
   BluetoothConnection? _connection;
@@ -119,7 +125,6 @@ class _HomePageState extends State<HomePage> {
             child: Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                // Cerchio che funge da LED: rosso = non connesso, verde = connesso
                 Container(
                   width: 20,
                   height: 20,
@@ -133,7 +138,7 @@ class _HomePageState extends State<HomePage> {
               ],
             ),
           ),
-          // LISTA DEI DISPOSITIVI DISPONIBILI con il pezzo aggiornato
+          // LISTA DEI DISPOSITIVI DISPONIBILI
           Expanded(
             child: ListView.builder(
               itemCount: _devicesList.length,
@@ -143,16 +148,39 @@ class _HomePageState extends State<HomePage> {
                 String displayName = (result.device.name != null && result.device.name!.isNotEmpty)
                     ? result.device.name!
                     : "Dispositivo sconosciuto (${result.device.address})";
-                
                 return ListTile(
                   leading: Icon(Icons.devices),
                   title: Text(displayName),
                   subtitle: Text(result.device.address),
-                  onTap: () => _connectToDevice(result.device),
+                  trailing: (_selectedDevice != null &&
+                          _selectedDevice!.address == result.device.address)
+                      ? Icon(Icons.check, color: Colors.green)
+                      : null,
+                  onTap: () {
+                    setState(() {
+                      if (_selectedDevice != null &&
+                          _selectedDevice!.address == result.device.address) {
+                        _selectedDevice = null;
+                      } else {
+                        _selectedDevice = result.device;
+                      }
+                    });
+                  },
                 );
               },
             ),
           ),
+          // Bottone "Connetti" (visibile solo se un dispositivo è selezionato)
+          if (_selectedDevice != null)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 8.0),
+              child: ElevatedButton(
+                child: Text('Connetti a "${_selectedDevice!.name ?? _selectedDevice!.address}"'),
+                onPressed: () {
+                  _connectToDevice(_selectedDevice!);
+                },
+              ),
+            ),
           // Se la connessione è attiva, mostra l'interfaccia per la chat.
           if (_isConnected) _buildChatArea(),
         ],
@@ -165,6 +193,7 @@ class _HomePageState extends State<HomePage> {
     setState(() {
       _devicesList.clear();
       _isDiscovering = true;
+      _selectedDevice = null;
     });
 
     FlutterBluetoothSerial.instance.startDiscovery().listen((result) {
@@ -178,38 +207,69 @@ class _HomePageState extends State<HomePage> {
     });
   }
 
-  // Funzione per connettersi a un dispositivo selezionato
+  // Funzione per connettersi a un dispositivo selezionato (modalità client)
   Future<void> _connectToDevice(BluetoothDevice device) async {
     try {
-      BluetoothConnection connection = await BluetoothConnection.toAddress(device.address);
+      // Verifica se il dispositivo è abbinato
+      if (!device.isBonded) {
+        _showErrorDialog("Il dispositivo non è abbinato. Effettua il pairing nelle impostazioni e riprova.");
+        return;
+      }
+      print('Tentativo di connessione a ${device.address}');
+      // Aggiungi un ritardo per dare tempo al dispositivo di prepararsi
+      await Future.delayed(Duration(seconds: 2));
+      // Tenta la connessione con un timeout di 10 secondi
+      BluetoothConnection connection = await BluetoothConnection.toAddress(device.address)
+          .timeout(Duration(seconds: 10));
       setState(() {
         _connection = connection;
         _isConnected = true;
       });
       print('Connesso a ${device.address}');
-
-      // Ascolta i dati in ingresso (messaggi ricevuti)
       connection.input?.listen((data) {
         String received = String.fromCharCodes(data);
         print('Messaggio ricevuto: $received');
       }).onDone(() {
-        // Se la connessione si chiude
         setState(() {
           _isConnected = false;
         });
+        print('Connessione chiusa');
+      });
+    } on TimeoutException catch (e) {
+      print('Timeout nella connessione a ${device.address}: $e');
+      _showErrorDialog('Timeout nella connessione. Assicurati che il dispositivo sia abbinato e in modalità visibile.');
+      setState(() {
+        _isConnected = false;
       });
     } catch (e) {
-      print('Impossibile connettersi: $e');
+      print('Impossibile connettersi a ${device.address}: $e');
+      _showErrorDialog('Impossibile connettersi al dispositivo. Assicurati che il dispositivo sia abbinato e in modalità visibile.');
       setState(() {
         _isConnected = false;
       });
     }
   }
 
-  // Widget per la chat (invio e ricezione messaggi)
+  // Funzione per mostrare un dialogo d'errore
+  void _showErrorDialog(String message) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Errore di Connessione'),
+        content: Text(message),
+        actions: [
+          TextButton(
+            child: Text('OK'),
+            onPressed: () => Navigator.of(context).pop(),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // Widget per l'area chat (invio e ricezione messaggi)
   Widget _buildChatArea() {
     TextEditingController _msgController = TextEditingController();
-
     return Container(
       padding: const EdgeInsets.all(8.0),
       color: Colors.grey[200],
@@ -227,13 +287,12 @@ class _HomePageState extends State<HomePage> {
             icon: Icon(Icons.send),
             onPressed: () {
               if (_msgController.text.isNotEmpty && _connection != null) {
-                // Invia il messaggio al dispositivo connesso
                 _connection!.output.add(Uint8List.fromList(_msgController.text.codeUnits));
                 _connection!.output.allSent;
                 _msgController.clear();
               }
             },
-          )
+          ),
         ],
       ),
     );
