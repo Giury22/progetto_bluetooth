@@ -3,12 +3,18 @@ package com.example.progetto_bluetooth
 import android.bluetooth.*
 import android.content.Context
 import android.util.Log
+import io.flutter.plugin.common.EventChannel
 import java.util.*
 
 class GattServerHelper(private val context: Context) {
 
     private var bluetoothGattServer: BluetoothGattServer? = null
     private var connectedDevice: BluetoothDevice? = null
+
+    companion object {
+        // Event sink per inviare messaggi a Flutter
+        var eventSink: EventChannel.EventSink? = null
+    }
 
     // Definisci gli UUID per il servizio e la caratteristica
     private val SERVICE_UUID: UUID = UUID.fromString("0000fff0-0000-1000-8000-00805f9b34fb")
@@ -37,7 +43,6 @@ class GattServerHelper(private val context: Context) {
         ) {
             super.onCharacteristicReadRequest(device, requestId, offset, characteristic)
             if (characteristic.uuid == CHARACTERISTIC_UUID) {
-                // In risposta a una richiesta di lettura, inviamo il valore attuale della caratteristica
                 val value = characteristic.value ?: "Nessun messaggio".toByteArray()
                 bluetoothGattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, value)
             } else {
@@ -56,30 +61,26 @@ class GattServerHelper(private val context: Context) {
         ) {
             super.onCharacteristicWriteRequest(device, requestId, characteristic, preparedWrite, responseNeeded, offset, value)
             if (characteristic.uuid == CHARACTERISTIC_UUID) {
-                // Leggiamo il messaggio inviato e creiamo un echo
                 val receivedMessage = String(value, Charsets.UTF_8)
                 Log.i("GattServerHelper", "Messaggio ricevuto da ${device.address}: $receivedMessage")
+                // Costruiamo l'echo
                 val echoMessage = "Ricevuto: $receivedMessage"
                 characteristic.value = echoMessage.toByteArray(Charsets.UTF_8)
-                // Inviaamo la risposta se richiesta
                 if (responseNeeded) {
                     bluetoothGattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, characteristic.value)
                 }
-                // Inviamo una notifica per aggiornare il client
-                notifyCharacteristicChanged(characteristic, device)
+                // Invia la notifica al client
+                bluetoothGattServer?.notifyCharacteristicChanged(device, characteristic, false)
+                // Invia l'evento a Flutter per aggiornare la UI nel dispositivo periferico
+                eventSink?.success(echoMessage)
             } else {
                 if (responseNeeded) {
                     bluetoothGattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_FAILURE, offset, null)
                 }
             }
         }
-
-        private fun notifyCharacteristicChanged(characteristic: BluetoothGattCharacteristic, device: BluetoothDevice) {
-            bluetoothGattServer?.notifyCharacteristicChanged(device, characteristic, false)
-        }
     }
 
-    // Avvia il GATT server e aggiunge il servizio con la caratteristica.
     fun startServer(): Boolean {
         val bluetoothManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
         bluetoothGattServer = bluetoothManager.openGattServer(context, gattServerCallback)
@@ -99,7 +100,6 @@ class GattServerHelper(private val context: Context) {
         return added
     }
 
-    // Ferma il GATT server.
     fun stopServer() {
         bluetoothGattServer?.close()
         bluetoothGattServer = null
@@ -107,12 +107,10 @@ class GattServerHelper(private val context: Context) {
         Log.i("GattServerHelper", "GATT server fermato")
     }
 
-    // Restituisce l'indirizzo del dispositivo connesso (se presente).
     fun getConnectedDevice(): String? {
         return connectedDevice?.address
     }
 
-    // Invia una notifica (scrive il messaggio nella caratteristica e notifica il client).
     fun sendNotification(message: String): Boolean {
         if (bluetoothGattServer == null || connectedDevice == null) return false
         val service = bluetoothGattServer?.getService(SERVICE_UUID) ?: return false

@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
+import 'package:flutter/services.dart'; // Necessario per MethodChannel ed EventChannel
 import 'package:flutter_reactive_ble/flutter_reactive_ble.dart';
 import 'package:flutter_ble_peripheral/flutter_ble_peripheral.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -12,29 +12,8 @@ import 'package:permission_handler/permission_handler.dart';
 final Uuid serviceUuid = Uuid.parse("0000fff0-0000-1000-8000-00805f9b34fb");
 final Uuid characteristicUuid = Uuid.parse("0000fff1-0000-1000-8000-00805f9b34fb");
 
-void main() {
-  runApp(MyApp());
-}
-
-class MyApp extends StatelessWidget {
-  @override
-  Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'BLE Chat',
-      theme: ThemeData(primarySwatch: Colors.blue),
-      home: HomePage(),
-    );
-  }
-}
-
-/// Classe per rappresentare un dispositivo scoperto (usata in modalità centrale).
-class DiscoveredDevice {
-  final String id;
-  final String name;
-  DiscoveredDevice({required this.id, required this.name});
-}
-
-/// Gestore per il GATT server (funzionalità nativa) tramite Platform Channel.
+/// Classe che espone il GATT server nativo tramite Platform Channel.
+/// Assicurati di aver implementato anche la parte nativa (GattServerHelper.kt e la registrazione nel MainActivity.kt).
 class GattServerManager {
   static const MethodChannel _channel = MethodChannel("com.example.progetto_bluetooth/gatt");
 
@@ -58,13 +37,35 @@ class GattServerManager {
   }
 }
 
+void main() {
+  runApp(MyApp());
+}
+
+class MyApp extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'BLE Chat',
+      theme: ThemeData(primarySwatch: Colors.blue),
+      home: HomePage(),
+    );
+  }
+}
+
+/// Classe per rappresentare un dispositivo scoperto (Modalità Centrale).
+class DiscoveredDevice {
+  final String id;
+  final String name;
+  DiscoveredDevice({required this.id, required this.name});
+}
+
 class HomePage extends StatefulWidget {
   @override
   _HomePageState createState() => _HomePageState();
 }
 
 class _HomePageState extends State<HomePage> {
-  // Toggle per il ruolo: false = centrale, true = periferico.
+  // Toggle per il ruolo: false = centrale, true = periferica.
   bool _isPeripheral = false;
 
   // Istanza per il ruolo centrale (client) con flutter_reactive_ble.
@@ -85,27 +86,33 @@ class _HomePageState extends State<HomePage> {
   String _connectionStatus = "Non connesso";
   String _receivedMessages = "";
 
+  // Stato dell'advertising (Modalità Periferica).
+  bool _isAdvertising = false;
+
   // Controller per l'invio dei messaggi.
   final TextEditingController _msgController = TextEditingController();
 
-  // Stato dell'advertising (Modalità Periferica).
-  bool _isAdvertising = false;
+  // Variabile per memorizzare l'ultimo messaggio inviato in modalità centrale.
+  String? _lastSentMessage;
+
+  // Sottoscrizione all'EventChannel per ricevere eventi dal GATT server nativo (per periferica).
+  StreamSubscription? _gattEventSubscription;
 
   @override
   void initState() {
     super.initState();
     _requestPermissions();
-    // In base al ruolo, avvia la funzionalità adeguata.
+    // Se il ruolo iniziale è periferica, avvia advertising e GATT server e la sottoscrizione agli eventi.
     if (_isPeripheral) {
       _startAdvertising();
-      // Avvia il GATT server nativo.
       GattServerManager.startServer().then((result) {
-        print("GATT Server: $result");
+        print("GATT Server avviato: $result");
       });
+      _startGattEventSubscription();
     }
   }
 
-  /// Richiede i permessi necessari.
+  /// Richiede i permessi necessari (localizzazione e permessi BLE).
   Future<void> _requestPermissions() async {
     final statuses = await [
       Permission.location,
@@ -159,6 +166,23 @@ class _HomePageState extends State<HomePage> {
     } catch (e) {
       print("Errore nello stop dell'advertising: $e");
     }
+  }
+
+  /// Sottoscrizione all'EventChannel per ricevere gli eventi dal GATT server nativo.
+  void _startGattEventSubscription() {
+    const eventChannel = EventChannel("com.example.progetto_bluetooth/gatt_events");
+    _gattEventSubscription = eventChannel.receiveBroadcastStream().listen((event) {
+      setState(() {
+        _receivedMessages += "Ricevuto: " + event.toString() + "\n";
+      });
+    }, onError: (error) {
+      print("Errore nell'EventChannel: $error");
+    });
+  }
+
+  void _stopGattEventSubscription() {
+    _gattEventSubscription?.cancel();
+    _gattEventSubscription = null;
   }
 
   /// Avvia la scansione dei dispositivi (Modalità Centrale).
@@ -216,9 +240,16 @@ class _HomePageState extends State<HomePage> {
         );
         _notificationSubscription =
             _ble.subscribeToCharacteristic(_characteristic!).listen((data) {
-          setState(() {
-            _receivedMessages += utf8.decode(data) + "\n";
-          });
+          String received = utf8.decode(data);
+          // Se il messaggio ricevuto è l'eco del messaggio inviato, ignoralo.
+          if (_lastSentMessage != null &&
+              received.trim() == "Ricevuto: " + _lastSentMessage!) {
+            print("Echo ignorato: $received");
+          } else {
+            setState(() {
+              _receivedMessages += "Ricevuto: " + received + "\n";
+            });
+          }
         }, onError: (error) {
           print("Errore nelle notifiche: $error");
         });
@@ -237,15 +268,19 @@ class _HomePageState extends State<HomePage> {
     });
   }
 
-  /// Invia un messaggio (Modalità Centrale).
+  /// Invia un messaggio dal dispositivo centrale.
   Future<void> _sendMessageCentral() async {
     if (_characteristic != null && _msgController.text.isNotEmpty) {
       final message = _msgController.text;
+      _lastSentMessage = message;
       try {
         await _ble.writeCharacteristicWithResponse(
           _characteristic!,
           value: utf8.encode(message),
         );
+        setState(() {
+          _receivedMessages += "Inviato (centrale): " + message + "\n";
+        });
         print("Messaggio inviato (centrale): $message");
         _msgController.clear();
       } catch (e) {
@@ -270,10 +305,13 @@ class _HomePageState extends State<HomePage> {
       final message = _msgController.text;
       try {
         final result = await GattServerManager.sendNotification(message, deviceAddress);
-        print("Messaggio inviato (periferico): $message, risultato: $result");
+        setState(() {
+          _receivedMessages += "Inviato (periferica): " + message + "\n";
+        });
+        print("Messaggio inviato (periferica): $message, risultato: $result");
         _msgController.clear();
       } catch (e) {
-        print("Errore nell'invio del messaggio (periferico): $e");
+        print("Errore nell'invio del messaggio (periferica): $e");
       }
     }
   }
@@ -282,6 +320,7 @@ class _HomePageState extends State<HomePage> {
   void dispose() {
     _connectionSubscription?.cancel();
     _notificationSubscription?.cancel();
+    _gattEventSubscription?.cancel();
     _msgController.dispose();
     if (_isPeripheral) {
       GattServerManager.stopServer().then((result) {
@@ -306,20 +345,20 @@ class _HomePageState extends State<HomePage> {
                 onChanged: (value) {
                   setState(() {
                     _isPeripheral = value;
-                    // Se cambio ruolo, resetto gli stati
+                    // Reset degli stati quando si cambia ruolo.
                     _devices.clear();
                     _selectedDevice = null;
                     _isConnected = false;
                     _connectionStatus = "Non connesso";
                     _receivedMessages = "";
-                    // In base al nuovo ruolo, avvio o fermo advertising e GATT server.
+                    _stopGattEventSubscription();
                     if (_isPeripheral) {
                       _startAdvertising();
                       GattServerManager.startServer().then((result) {
                         print("GATT Server avviato: $result");
                       });
+                      _startGattEventSubscription();
                     } else {
-                      // Se passo a centrale, fermo advertising e GATT server.
                       _stopAdvertising();
                       GattServerManager.stopServer().then((result) {
                         print("GATT Server fermato: $result");
@@ -333,55 +372,86 @@ class _HomePageState extends State<HomePage> {
           ),
         ],
       ),
-      body: _isPeripheral ? _buildPeripheralUI() : _buildCentralUI(),
-    );
-  }
-
-  /// UI per il ruolo Centrale (scansione, connessione, chat).
-  Widget _buildCentralUI() {
-    return SingleChildScrollView(
-      child: Column(
-        children: [
-          // Stato della connessione
-          Padding(
-            padding: const EdgeInsets.all(8.0),
-            child: Text("Stato: $_connectionStatus"),
-          ),
-          ElevatedButton(
-            child: Text(_isScanning ? "Scansione in corso..." : "Trova dispositivi"),
-            onPressed: _isScanning ? null : _startScan,
-          ),
-          Container(
-            height: 200,
-            child: ListView.builder(
-              itemCount: _devices.length,
-              itemBuilder: (context, index) {
-                final device = _devices[index];
-                return ListTile(
-                  title: Text(device.name),
-                  subtitle: Text(device.id),
-                  trailing: (_selectedDevice != null && _selectedDevice!.id == device.id)
-                      ? Icon(Icons.check, color: Colors.green)
-                      : null,
-                  onTap: () {
-                    setState(() {
-                      if (_selectedDevice != null && _selectedDevice!.id == device.id) {
-                        _selectedDevice = null;
-                      } else {
-                        _selectedDevice = device;
-                      }
-                    });
-                  },
-                );
-              },
+      body: SingleChildScrollView(
+        child: Column(
+          children: [
+            // Stato della connessione
+            Padding(
+              padding: const EdgeInsets.all(8.0),
+              child: Text("Stato: $_connectionStatus"),
             ),
-          ),
-          if (_selectedDevice != null && !_isConnected)
-            ElevatedButton(
-              child: Text('Connetti a "${_selectedDevice!.name}"'),
-              onPressed: () => _connectToDevice(_selectedDevice!),
+            // Sezione per la modalità periferica.
+            Card(
+              margin: EdgeInsets.all(8),
+              child: Padding(
+                padding: const EdgeInsets.all(12.0),
+                child: Column(
+                  children: [
+                    Text("Modalità Periferica (Advertising)"),
+                    SizedBox(height: 8),
+                    ElevatedButton(
+                      child: Text(_isAdvertising ? "Ferma Advertising" : "Avvia Advertising"),
+                      onPressed: () {
+                        if (_isAdvertising) {
+                          _stopAdvertising();
+                        } else {
+                          _startAdvertising();
+                        }
+                      },
+                    ),
+                  ],
+                ),
+              ),
             ),
-          if (_isConnected)
+            // Sezione per la modalità centrale.
+            Card(
+              margin: EdgeInsets.all(8),
+              child: Padding(
+                padding: const EdgeInsets.all(12.0),
+                child: Column(
+                  children: [
+                    Text("Modalità Centrale (Scansione e Connessione)"),
+                    SizedBox(height: 8),
+                    ElevatedButton(
+                      child: Text(_isScanning ? "Scansione in corso..." : "Trova dispositivi"),
+                      onPressed: _isScanning ? null : _startScan,
+                    ),
+                    SizedBox(height: 8),
+                    Container(
+                      height: 200,
+                      child: ListView.builder(
+                        itemCount: _devices.length,
+                        itemBuilder: (context, index) {
+                          final device = _devices[index];
+                          return ListTile(
+                            title: Text(device.name),
+                            subtitle: Text(device.id),
+                            trailing: (_selectedDevice != null && _selectedDevice!.id == device.id)
+                                ? Icon(Icons.check, color: Colors.green)
+                                : null,
+                            onTap: () {
+                              setState(() {
+                                if (_selectedDevice != null && _selectedDevice!.id == device.id) {
+                                  _selectedDevice = null;
+                                } else {
+                                  _selectedDevice = device;
+                                }
+                              });
+                            },
+                          );
+                        },
+                      ),
+                    ),
+                    if (_selectedDevice != null && !_isConnected)
+                      ElevatedButton(
+                        child: Text('Connetti a "${_selectedDevice!.name}"'),
+                        onPressed: () => _connectToDevice(_selectedDevice!),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+            // Sezione Chat unificata.
             Card(
               margin: EdgeInsets.all(8),
               child: Padding(
@@ -395,76 +465,23 @@ class _HomePageState extends State<HomePage> {
                     SizedBox(height: 8),
                     ElevatedButton(
                       child: Text("Invia messaggio"),
-                      onPressed: _sendMessageCentral,
+                      onPressed: () {
+                        // Se il dispositivo è connesso in modalità centrale, invia tramite quella; altrimenti, utilizza la modalità periferica.
+                        if (_isConnected) {
+                          _sendMessageCentral();
+                        } else {
+                          _sendMessagePeripheral();
+                        }
+                      },
                     ),
                     SizedBox(height: 8),
-                    Text("Messaggi ricevuti:\n$_receivedMessages"),
+                    Text("Chat:\n$_receivedMessages"),
                   ],
                 ),
               ),
             ),
-        ],
-      ),
-    );
-  }
-
-  /// UI per il ruolo Periferico (advertising e chat per inviare messaggi).
-  Widget _buildPeripheralUI() {
-    return SingleChildScrollView(
-      child: Column(
-        children: [
-          // Stato dell'advertising
-          Padding(
-            padding: const EdgeInsets.all(8.0),
-            child: Text("Advertising: ${_isAdvertising ? "Attivo" : "Inattivo"}"),
-          ),
-          ElevatedButton(
-            child: Text(_isAdvertising ? "Ferma Advertising" : "Avvia Advertising"),
-            onPressed: () {
-              if (_isAdvertising) {
-                _stopAdvertising();
-              } else {
-                _startAdvertising();
-              }
-            },
-          ),
-          // UI chat per il ruolo periferico.
-          // Nota: il dispositivo periferico invia messaggi tramite il GATT server nativo.
-          Card(
-            margin: EdgeInsets.all(8),
-            child: Padding(
-              padding: const EdgeInsets.all(12.0),
-              child: Column(
-                children: [
-                  Text("Chat (Ruolo Periferico)"),
-                  TextField(
-                    controller: _msgController,
-                    decoration: InputDecoration(labelText: "Inserisci messaggio"),
-                  ),
-                  SizedBox(height: 8),
-                  ElevatedButton(
-                    child: Text("Invia messaggio"),
-                    onPressed: () async {
-                      // Ottieni l'indirizzo del dispositivo connesso (dal GATT server nativo).
-                      final deviceAddress = await GattServerManager.getConnectedDevice();
-                      if (deviceAddress == null) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(
-                            content: Text("Nessun dispositivo connesso."),
-                          ),
-                        );
-                        return;
-                      }
-                      await _sendMessagePeripheral();
-                    },
-                  ),
-                  SizedBox(height: 8),
-                  Text("Attendi i messaggi (il GATT server invia un echo automatico)."),
-                ],
-              ),
-            ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }

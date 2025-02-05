@@ -2,20 +2,20 @@ package com.example.progetto_bluetooth
 
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
-import android.content.Context
 
 class MainActivity: FlutterActivity() {
 
-    private val CHANNEL = "com.example.progetto_bluetooth/gatt"
+    private val GATT_CHANNEL = "com.example.progetto_bluetooth/gatt"
+    private val GATT_EVENTS_CHANNEL = "com.example.progetto_bluetooth/gatt_events"
     private var gattServerHelper: GattServerHelper? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
-        // Inizializza il GattServerHelper con il contesto dell'applicazione.
         gattServerHelper = GattServerHelper(applicationContext)
 
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler { call, result ->
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, GATT_CHANNEL).setMethodCallHandler { call, result ->
             when(call.method) {
                 "startGattServer" -> {
                     val started = gattServerHelper?.startServer() ?: false
@@ -51,5 +51,16 @@ class MainActivity: FlutterActivity() {
                 }
             }
         }
+
+        EventChannel(flutterEngine.dartExecutor.binaryMessenger, GATT_EVENTS_CHANNEL).setStreamHandler(
+            object : EventChannel.StreamHandler {
+                override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
+                    GattServerHelper.eventSink = events
+                }
+                override fun onCancel(arguments: Any?) {
+                    GattServerHelper.eventSink = null
+                }
+            }
+        )
     }
 }
